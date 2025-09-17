@@ -15,6 +15,10 @@ public class RabbitMQProducerConfig extends MQProperties {
     private String exchange;
     private String username;
     private String password;
+    /**
+     * 发往RabbitMQ的消息延时消费时长，单位：秒
+     */
+    private long delayTtl = 3 * 60;
 
     public String getHost() {
         return host;
@@ -54,5 +58,21 @@ public class RabbitMQProducerConfig extends MQProperties {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    /**
+     * 设置发往RabbitMQ的消息延时消费时长，单位：秒
+     * @return
+     */
+    public long getDelayTtl() {
+        return delayTtl;
+    }
+
+    /**
+     * 获取发往RabbitMQ的消息延时消费时长，单位：秒
+     * @param delayTtl
+     */
+    public void setDelayTtl(long delayTtl) {
+        this.delayTtl = delayTtl;
     }
 }

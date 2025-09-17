@@ -106,6 +106,11 @@ public class CanalRabbitMQProducer extends AbstractMQProducer implements CanalMQ
         if (!StringUtils.isEmpty(password)) {
             rabbitMQProperties.setPassword(password);
         }
+        // binlog延时消费时长
+        String delayTtl = PropertiesUtils.getProperty(properties, RabbitMQConstants.RABBITMQ_DELAY_TTL);
+        if (!StringUtils.isEmpty(delayTtl)) {
+            rabbitMQProperties.setDelayTtl(Long.parseLong(delayTtl));
+        }
     }
 
     @Override
