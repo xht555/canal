@@ -4,6 +4,8 @@ import java.io.Serializable;
 import java.io.UnsupportedEncodingException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.sql.Types;
 import java.util.Arrays;
@@ -12,6 +14,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.vividsolutions.jts.geom.Geometry;
+import com.vividsolutions.jts.io.WKBReader;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.slf4j.Logger;
@@ -832,19 +836,42 @@ public class LogEventConvert extends AbstractCanalLifeCycle implements BinlogPar
                     case Types.BINARY:
                     case Types.VARBINARY:
                     case Types.LONGVARBINARY:
-                        // fixed text encoding
-                        // https://github.com/AlibabaTech/canal/issues/18
-                        // mysql binlog中blob/text都处理为blob类型，需要反查table
-                        // meta，按编码解析text
-                        if (fieldMeta != null && isText(fieldMeta.getColumnType())) {
-                            columnBuilder.setValue(new String((byte[]) value, charset));
-                            javaType = Types.CLOB;
+                        // point、polygon空间数据类型支持
+                        if (columnBuilder.getMysqlType().equalsIgnoreCase("point") || columnBuilder.getMysqlType().equalsIgnoreCase("polygon")) {
+                            try {
+                                byte[] bytes = (byte[]) value;
+                                ByteOrder byteOrder = ByteOrder.LITTLE_ENDIAN;
+                                ByteBuffer.wrap(bytes, 0, 4).order(byteOrder).getInt();
+
+                                byte[] wkbData = new byte[bytes.length - 4];
+                                System.arraycopy(bytes, 4, wkbData, 0, wkbData.length);
+
+                                // 将byte数组转换为WKB格式
+                                WKBReader wkbReader = new WKBReader();
+                                Geometry geometry = wkbReader.read(wkbData);
+                                columnBuilder.setValue(geometry.toString());
+
+                                if (logger.isDebugEnabled()) {
+                                    logger.debug("解析BINARY类型数据 => [column={}, value={}]", columnBuilder.getName(), columnBuilder.getValue());
+                                }
+                            } catch (Exception e) {
+                                logger.error("解析MySQL空间数据失败。", e);
+                            }
                         } else {
-                            // byte数组，直接使用iso-8859-1保留对应编码，浪费内存
-                            columnBuilder.setValue(new String((byte[]) value, ISO_8859_1));
-                            // columnBuilder.setValueBytes(ByteString.copyFrom((byte[])
-                            // value));
-                            javaType = Types.BLOB;
+                            // fixed text encoding
+                            // https://github.com/AlibabaTech/canal/issues/18
+                            // mysql binlog中blob/text都处理为blob类型，需要反查table
+                            // meta，按编码解析text
+                            if (fieldMeta != null && isText(fieldMeta.getColumnType())) {
+                                columnBuilder.setValue(new String((byte[]) value, charset));
+                                javaType = Types.CLOB;
+                            } else {
+                                // byte数组，直接使用iso-8859-1保留对应编码，浪费内存
+                                columnBuilder.setValue(new String((byte[]) value, ISO_8859_1));
+                                // columnBuilder.setValueBytes(ByteString.copyFrom((byte[])
+                                // value));
+                                javaType = Types.BLOB;
+                            }
                         }
                         break;
                     case Types.CHAR:
