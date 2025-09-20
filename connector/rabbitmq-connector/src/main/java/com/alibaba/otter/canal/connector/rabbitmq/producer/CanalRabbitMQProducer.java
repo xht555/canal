@@ -1,11 +1,13 @@
 package com.alibaba.otter.canal.connector.rabbitmq.producer;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.TimeoutException;
 
+import com.alibaba.otter.canal.connector.redis.RedisClient;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +28,7 @@ import com.alibaba.otter.canal.connector.rabbitmq.config.RabbitMQConstants;
 import com.alibaba.otter.canal.connector.rabbitmq.config.RabbitMQProducerConfig;
 import com.alibaba.otter.canal.protocol.FlatMessage;
 import com.alibaba.otter.canal.protocol.Message;
+import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.AlreadyClosedException;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
@@ -51,6 +54,7 @@ public class CanalRabbitMQProducer extends AbstractMQProducer implements CanalMQ
         this.mqProperties = rabbitMQProperties;
         super.init(properties);
         loadRabbitMQProperties(properties);
+        RedisClient.init(properties);
 
         ConnectionFactory factory = new ConnectionFactory();
         String servers = rabbitMQProperties.getHost();
@@ -170,7 +174,40 @@ public class CanalRabbitMQProducer extends AbstractMQProducer implements CanalMQ
         // tips: 目前逻辑中暂不处理对exchange处理，请在Console后台绑定 才可使用routekey
         try {
             RabbitMQProducerConfig rabbitMQProperties = (RabbitMQProducerConfig) this.mqProperties;
-            channel.basicPublish(rabbitMQProperties.getExchange(), queueName, null, message);
+
+            // 获取binlog入消息队列前的消息投递详情
+            String[] exchangeInfo = rabbitMQProperties.getExchange().split("-");
+            BinlogDeliveryInfo binlogDeliveryInfo = CanalRabbitMQUtils.binlogDeliveryInfo(rabbitMQProperties.getExchange(), message);
+            if (binlogDeliveryInfo.isDdl()) {
+                channel.basicPublish(rabbitMQProperties.getExchange(), queueName, null, message);
+                return;
+            }
+
+            // dispatchId为空时，表明该binlog由数据库原生产生
+            // 故需要投递到MQ中
+            if (StringUtils.isEmpty(binlogDeliveryInfo.getDispatchTime())) {
+                Map<String, Object> headers = new HashMap<>();
+                headers.put("x-delivery-id", binlogDeliveryInfo.getDeliveryId()); // 消息入MQ队列时的消息投递事务ID
+                headers.put("x-record-id", binlogDeliveryInfo.getPkIdValue());    // 数据记录的主键字段值
+
+                if (logger.isDebugEnabled()) {
+                    logger.debug("binlog入MQ队列消息头：{}", headers);
+                }
+
+                AMQP.BasicProperties properties = CanalRabbitMQUtils.getMqProperties(headers);
+                channel.basicPublish(rabbitMQProperties.getExchange(), queueName, properties, message);
+            } else {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("检测到binlog分发事务[dispatchId={}, dispatchTime={}]，忽略binlog投递。", binlogDeliveryInfo.getDispatchId(), binlogDeliveryInfo.getDispatchTime());
+                }
+            }
+
+            // 删除缓存
+            String dispatchCacheKey = binlogDeliveryInfo.getDispatchCacheKey(exchangeInfo[0]);
+            RedisClient.jedis().del(dispatchCacheKey);
+            if (logger.isDebugEnabled()) {
+                logger.debug("binlog监听解析业务完成，删除缓存：cacheKey={}", dispatchCacheKey);
+            }
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }
